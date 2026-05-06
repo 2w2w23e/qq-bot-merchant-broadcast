@@ -1,72 +1,115 @@
 """远行商人播报插件入口"""
-from nonebot import get_driver, on_command, on_keyword
-from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, Message
-from nonebot.params import CommandArg
+from nonebot import get_driver, on_command
+from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent
 from nonebot.log import logger
 
 from .config import MerchantConfig
-from .spider import fetch_latest_post
 from .parser import parse_merchant_items
 from .scheduler import setup_scheduler
+from .spider import fetch_latest_post
 
-# 读取配置
 plugin_config = MerchantConfig()
-
-# 注册定时任务
 driver = get_driver()
 
+
 @driver.on_startup
-async def _():
-    logger.info("[远行商人] 插件启动，注册定时任务...")
+async def _startup_register_scheduler():
+    logger.info(
+        "[远行商人] 插件启动，测试模式=%s，测试群=%s",
+        plugin_config.merchant_test_mode,
+        plugin_config.merchant_test_group or "未设置",
+    )
     setup_scheduler(plugin_config)
 
 
-# ── 主动查询指令 ──────────────────────────────────────
-merchant_cmd = on_command("商人", aliases={"查商人", "远行商人"}, priority=5)
+# ── 群内查询指令 ──────────────────────────────────
+merchant_cmd = on_command("商人", aliases={"查商人", "远行商人"}, priority=5, block=True)
+test_cmd = on_command("测试商人", aliases={"商人测试", "测试远行商人"}, priority=5, block=True)
+
 
 @merchant_cmd.handle()
-async def handle_merchant_query(bot: Bot, event: GroupMessageEvent):
-    """群内触发立即查询"""
-    await merchant_cmd.send("🔍 正在查询远行商人信息，请稍候...")
-
-    post = await fetch_latest_post(plugin_config.xhh_user_id, plugin_config.xhh_request_timeout)
+async def handle_merchant_query():
+    """立即查询当前远行商人"""
+    post = await fetch_latest_post(
+        plugin_config.xhh_user_id,
+        plugin_config.xhh_request_timeout,
+        plugin_config.xhh_retry_times,
+    )
     if not post:
-        await merchant_cmd.finish("❌ 暂时无法获取远行商人信息，请稍后再试。")
+        await merchant_cmd.finish("暂时没有拿到远行商人信息，请稍后再试。")
         return
 
     items = parse_merchant_items(post["content"])
     if not items:
-        await merchant_cmd.finish(
-            f"📭 最新帖子（{post['title'][:30]}）中未找到道具信息。"
+        await merchant_cmd.finish("最新帖子里暂未识别到远行商人售卖道具。")
+        return
+
+    await merchant_cmd.finish(_format_message(items))
+
+
+@test_cmd.handle()
+async def handle_merchant_test(event: GroupMessageEvent):
+    """测试模式：立即抓取并返回调试信息（需 MERCHANT_TEST_MODE=true）"""
+    if not plugin_config.merchant_test_mode:
+        await test_cmd.finish(
+            "当前未开启测试模式。\n"
+            "请在 .env 中设置：MERCHANT_TEST_MODE=true"
         )
         return
 
-    msg = _format_message(post, items)
-    await merchant_cmd.finish(msg)
+    await test_cmd.send("🔍 正在抓取最新帖子...")
 
+    post = await fetch_latest_post(
+        plugin_config.xhh_user_id,
+        plugin_config.xhh_request_timeout,
+        plugin_config.xhh_retry_times,
+    )
+    if not post:
+        await test_cmd.finish("❌ 测试失败：未能抓取到最新帖子，请检查网络或 XHH_USER_ID 配置。")
+        return
 
-def _format_message(post: dict, items: list[str]) -> str:
-    """格式化推送消息"""
-    items_text = "\n".join(f"  {i+1}. {item}" for i, item in enumerate(items))
-    return (
-        f"🧙‍♂️ 【远行商人来了！】\n"
-        f"📅 发布时间：{post.get('publish_time', '未知')}\n"
-        f"📦 本轮出售道具如下：\n"
-        f"{items_text}"
+    items = parse_merchant_items(post["content"])
+    target_group = plugin_config.merchant_test_group or str(event.group_id)
+
+    if not items:
+        preview = (post.get("content") or "")[:120].replace("\n", " ")
+        await test_cmd.finish(
+            "⚠️ 【测试完成，但未识别到道具】\n"
+            f"帖子ID：{post.get('post_id', '未知')}\n"
+            f"标题：{post.get('title', '无标题')}\n"
+            f"正文预览：{preview or '（空）'}"
+        )
+        return
+
+    await test_cmd.finish(
+        "✅ 【测试模式预览】\n"
+        f"将推送到群：{target_group}\n"
+        f"帖子ID：{post.get('post_id', '未知')}\n"
+        f"发布时间：{post.get('publish_time', '未知')}\n"
+        "────────────────\n"
+        f"{_format_message(items)}"
     )
 
 
-# 暴露给 scheduler 使用
-async def broadcast_merchant(bot: Bot, config: MerchantConfig, last_post_id: list):
+def _format_message(items: list[str]) -> str:
+    """格式化最终推送消息"""
+    return f"当前远行商人在卖：{'、'.join(items)}"
+
+
+async def broadcast_merchant(bot: Bot, config: MerchantConfig, last_post_id: list[str]):
     """定时任务调用的广播函数"""
-    post = await fetch_latest_post(config.xhh_user_id, config.xhh_request_timeout)
+    post = await fetch_latest_post(
+        config.xhh_user_id,
+        config.xhh_request_timeout,
+        config.xhh_retry_times,
+    )
     if not post:
         logger.warning("[远行商人] 爬取失败，跳过本次推送")
         return
 
-    # 去重：同一帖子只推送一次
+    # 去重
     if post["post_id"] == last_post_id[0]:
-        logger.info(f"[远行商人] 帖子 {post['post_id']} 已推送过，跳过")
+        logger.info("[远行商人] 帖子 %s 已推送过，跳过", post["post_id"])
         return
 
     items = parse_merchant_items(post["content"])
@@ -74,12 +117,25 @@ async def broadcast_merchant(bot: Bot, config: MerchantConfig, last_post_id: lis
         logger.info("[远行商人] 未找到道具信息，跳过本次推送")
         return
 
-    last_post_id[0] = post["post_id"]
-    msg = _format_message(post, items)
+    # 测试模式：只推送测试群 / 首个群
+    target_groups = list(config.merchant_groups)
+    if config.merchant_test_mode:
+        if config.merchant_test_group:
+            target_groups = [config.merchant_test_group]
+        elif target_groups:
+            target_groups = [target_groups[0]]
+        logger.info("[远行商人] 测试模式，本次仅推送到：%s", target_groups)
 
-    for group_id in config.merchant_groups:
+    if not target_groups:
+        logger.warning("[远行商人] 未配置可推送群号，跳过")
+        return
+
+    last_post_id[0] = post["post_id"]
+    msg = _format_message(items)
+
+    for group_id in target_groups:
         try:
             await bot.send_group_msg(group_id=int(group_id), message=msg)
-            logger.info(f"[远行商人] 已推送到群 {group_id}")
+            logger.info("[远行商人] 已推送到群 %s", group_id)
         except Exception as e:
-            logger.error(f"[远行商人] 推送群 {group_id} 失败: {e}")
+            logger.error("[远行商人] 推送群 %s 失败: %s", group_id, e)

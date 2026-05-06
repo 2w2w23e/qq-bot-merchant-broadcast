@@ -1,5 +1,5 @@
 """定时任务注册模块"""
-from nonebot import get_bot, get_driver
+from nonebot import get_bot
 from nonebot.log import logger
 
 try:
@@ -10,22 +10,21 @@ except ImportError:
 
 from .config import MerchantConfig
 
-# 用列表包装，实现跨函数的可变引用（去重用）
 _last_post_id: list[str] = [""]
 
 
 def setup_scheduler(config: MerchantConfig):
-    """根据配置注册定时任务"""
     if scheduler is None:
         logger.error("[远行商人] 无法注册定时任务：apscheduler 不可用")
         return
 
-    hours = config.merchant_schedule_hours
-    if not hours:
-        hours = [9, 13, 17, 21]
-
+    hours = config.merchant_schedule_hours or [9, 13, 17, 21]
     hour_str = ",".join(str(h) for h in hours)
-    logger.info(f"[远行商人] 注册定时任务，每天 {hour_str}:00 执行")
+    logger.info("[远行商人] 注册定时任务，每天 %s:00 执行", hour_str)
+
+    if config.merchant_test_mode:
+        t = config.merchant_test_group or (config.merchant_groups[0] if config.merchant_groups else "未配置")
+        logger.info("[远行商人] 测试模式：定时消息只发往群 %s", t)
 
     @scheduler.scheduled_job(
         "cron",
@@ -39,9 +38,8 @@ def setup_scheduler(config: MerchantConfig):
         try:
             bot = get_bot()
         except Exception as e:
-            logger.warning(f"[远行商人] 获取 Bot 实例失败（未连接？）: {e}")
+            logger.warning("[远行商人] 获取 Bot 实例失败（未连接？）: %s", e)
             return
 
-        # 延迟导入避免循环依赖
         from . import broadcast_merchant
         await broadcast_merchant(bot, config, _last_post_id)

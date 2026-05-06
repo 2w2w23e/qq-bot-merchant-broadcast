@@ -15,9 +15,8 @@ driver = get_driver()
 @driver.on_startup
 async def _startup_register_scheduler():
     logger.info(
-        "[远行商人] 插件启动，测试模式=%s，测试群=%s",
-        plugin_config.merchant_test_mode,
-        plugin_config.merchant_test_group or "未设置",
+        f"[远行商人] 插件启动，测试模式={plugin_config.merchant_test_mode}，"
+        f"测试群={plugin_config.merchant_test_group or '未设置'}"
     )
     setup_scheduler(plugin_config)
 
@@ -96,10 +95,7 @@ async def handle_merchant_test(event: GroupMessageEvent):
 
 @send_cmd.handle()
 async def handle_merchant_send(bot: Bot, event: GroupMessageEvent):
-    """
-    测试模式下立即抓取并真实发送到目标群（不受去重限制）。
-    需要 MERCHANT_TEST_MODE=true。
-    """
+    """测试模式下立即抓取并真实发送到目标群（不受去重限制）"""
     if not plugin_config.merchant_test_mode:
         await send_cmd.finish(
             "当前未开启测试模式。\n"
@@ -125,11 +121,11 @@ async def handle_merchant_send(bot: Bot, event: GroupMessageEvent):
 
     msg = _format_message(items)
 
-    # 确定目标群：测试专用群 > MERCHANT_GROUPS 第一个 > 当前触发群
+    # 目标群优先级：测试专用群 > groups 第一个 > 当前群
     if plugin_config.merchant_test_group:
         target_groups = [plugin_config.merchant_test_group]
-    elif plugin_config.merchant_groups:
-        target_groups = [plugin_config.merchant_groups[0]]
+    elif plugin_config.groups:
+        target_groups = [plugin_config.groups[0]]
     else:
         target_groups = [str(event.group_id)]
 
@@ -138,19 +134,15 @@ async def handle_merchant_send(bot: Bot, event: GroupMessageEvent):
         try:
             await bot.send_group_msg(group_id=int(gid), message=msg)
             results.append(f"  ✅ 群 {gid} 发送成功")
-            logger.info("[远行商人] 测试立即发送 → 群 %s", gid)
+            logger.info(f"[远行商人] 测试立即发送 → 群 {gid}")
         except Exception as e:
             results.append(f"  ❌ 群 {gid} 发送失败: {e}")
-            logger.error("[远行商人] 测试立即发送失败 群 %s: %s", gid, e)
+            logger.error(f"[远行商人] 测试立即发送失败 群 {gid}: {e}")
 
-    await send_cmd.finish(
-        "📪 【立即发送完毕】\n"
-        + "\n".join(results)
-    )
+    await send_cmd.finish("📪 【立即发送完毕】\n" + "\n".join(results))
 
 
 def _format_message(items: list[str]) -> str:
-    """格式化最终推送消息"""
     return f"当前远行商人在卖：{'、'.join(items)}"
 
 
@@ -165,9 +157,8 @@ async def broadcast_merchant(bot: Bot, config: MerchantConfig, last_post_id: lis
         logger.warning("[远行商人] 爬取失败，跳过本次推送")
         return
 
-    # 去重
     if post["post_id"] == last_post_id[0]:
-        logger.info("[远行商人] 帖子 %s 已推送过，跳过", post["post_id"])
+        logger.info(f"[远行商人] 帖子 {post['post_id']} 已推送过，跳过")
         return
 
     items = parse_merchant_items(post["content"])
@@ -175,14 +166,14 @@ async def broadcast_merchant(bot: Bot, config: MerchantConfig, last_post_id: lis
         logger.info("[远行商人] 未找到道具信息，跳过本次推送")
         return
 
-    # 测试模式：只推送测试群 / 首个群
-    target_groups = list(config.merchant_groups)
+    # 测试模式：只推送测试群或首个群
+    target_groups = list(config.groups)
     if config.merchant_test_mode:
         if config.merchant_test_group:
             target_groups = [config.merchant_test_group]
         elif target_groups:
             target_groups = [target_groups[0]]
-        logger.info("[远行商人] 测试模式，本次仅推送到：%s", target_groups)
+        logger.info(f"[远行商人] 测试模式，本次仅推送到：{target_groups}")
 
     if not target_groups:
         logger.warning("[远行商人] 未配置可推送群号，跳过")
@@ -194,6 +185,6 @@ async def broadcast_merchant(bot: Bot, config: MerchantConfig, last_post_id: lis
     for group_id in target_groups:
         try:
             await bot.send_group_msg(group_id=int(group_id), message=msg)
-            logger.info("[远行商人] 已推送到群 %s", group_id)
+            logger.info(f"[远行商人] 已推送到群 {group_id}")
         except Exception as e:
-            logger.error("[远行商人] 推送群 %s 失败: %s", group_id, e)
+            logger.error(f"[远行商人] 推送群 {group_id} 失败: {e}")

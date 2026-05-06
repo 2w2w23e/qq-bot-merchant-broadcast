@@ -18,27 +18,26 @@ def setup_scheduler(config: MerchantConfig):
         logger.error("[远行商人] 无法注册定时任务：apscheduler 不可用")
         return
 
-    hours = config.merchant_schedule_hours or [9, 13, 17, 21]
+    hours = config.schedule_hours or [9, 13, 17, 21]
     hour_str = ",".join(str(h) for h in hours)
-    logger.info("[远行商人] 注册定时任务，每天 %s:00 执行", hour_str)
+    logger.info(f"[远行商人] 注册定时任务，每天 {hour_str}:00 执行")
 
     if config.merchant_test_mode:
-        t = config.merchant_test_group or (config.merchant_groups[0] if config.merchant_groups else "未配置")
-        logger.info("[远行商人] 测试模式：定时消息只发往群 %s", t)
+        t = config.merchant_test_group or (config.groups[0] if config.groups else "未配置")
+        logger.info(f"[远行商人] 测试模式：定时消息只发往群 {t}")
 
     @scheduler.scheduled_job(
         "cron",
         hour=hour_str,
         minute=0,
         id="merchant_broadcast",
-        replace_existing=True,
     )
     async def _broadcast_job():
         logger.info("[远行商人] 定时任务触发")
         try:
             bot = get_bot()
         except Exception as e:
-            logger.warning("[远行商人] 获取 Bot 实例失败（未连接？）: %s", e)
+            logger.warning(f"[远行商人] 获取 Bot 实例失败（未连接？）: {e}")
             return
 
         from . import broadcast_merchant

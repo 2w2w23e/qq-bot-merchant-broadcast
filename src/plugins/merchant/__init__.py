@@ -22,14 +22,15 @@ async def _startup_register_scheduler():
     setup_scheduler(plugin_config)
 
 
-# ── 群内查询指令 ──────────────────────────────────
+# ── 群内指令 ──────────────────────────────────────────────────
 merchant_cmd = on_command("商人", aliases={"查商人", "远行商人"}, priority=5, block=True)
-test_cmd = on_command("测试商人", aliases={"商人测试", "测试远行商人"}, priority=5, block=True)
+test_cmd     = on_command("测试商人", aliases={"商人测试", "测试远行商人"}, priority=5, block=True)
+send_cmd     = on_command("发送商人", aliases={"立即发送商人", "商人发送"}, priority=5, block=True)
 
 
 @merchant_cmd.handle()
 async def handle_merchant_query():
-    """立即查询当前远行商人"""
+    """立即查询当前远行商人（仅回复当前群，不推送）"""
     post = await fetch_latest_post(
         plugin_config.xhh_user_id,
         plugin_config.xhh_request_timeout,
@@ -49,7 +50,7 @@ async def handle_merchant_query():
 
 @test_cmd.handle()
 async def handle_merchant_test(event: GroupMessageEvent):
-    """测试模式：立即抓取并返回调试信息（需 MERCHANT_TEST_MODE=true）"""
+    """测试模式：预览抓取结果，不实际发送（需 MERCHANT_TEST_MODE=true）"""
     if not plugin_config.merchant_test_mode:
         await test_cmd.finish(
             "当前未开启测试模式。\n"
@@ -77,17 +78,74 @@ async def handle_merchant_test(event: GroupMessageEvent):
             "⚠️ 【测试完成，但未识别到道具】\n"
             f"帖子ID：{post.get('post_id', '未知')}\n"
             f"标题：{post.get('title', '无标题')}\n"
-            f"正文预览：{preview or '（空）'}"
+            f"正文预览：{preview or '（空）'}\n"
+            "\n💡 如需强制发送，使用 /发送商人 指令"
         )
         return
 
     await test_cmd.finish(
-        "✅ 【测试模式预览】\n"
-        f"将推送到群：{target_group}\n"
+        "✅ 【测试模式预览（未发送）】\n"
+        f"目标群：{target_group}\n"
         f"帖子ID：{post.get('post_id', '未知')}\n"
         f"发布时间：{post.get('publish_time', '未知')}\n"
         "────────────────\n"
-        f"{_format_message(items)}"
+        f"{_format_message(items)}\n"
+        "\n💡 确认无误后发送 /发送商人 立即推送到目标群"
+    )
+
+
+@send_cmd.handle()
+async def handle_merchant_send(bot: Bot, event: GroupMessageEvent):
+    """
+    测试模式下立即抓取并真实发送到目标群（不受去重限制）。
+    需要 MERCHANT_TEST_MODE=true。
+    """
+    if not plugin_config.merchant_test_mode:
+        await send_cmd.finish(
+            "当前未开启测试模式。\n"
+            "请在 .env 中设置：MERCHANT_TEST_MODE=true"
+        )
+        return
+
+    await send_cmd.send("📤 正在抓取并立即发送...")
+
+    post = await fetch_latest_post(
+        plugin_config.xhh_user_id,
+        plugin_config.xhh_request_timeout,
+        plugin_config.xhh_retry_times,
+    )
+    if not post:
+        await send_cmd.finish("❌ 抓取失败，无法发送。")
+        return
+
+    items = parse_merchant_items(post["content"])
+    if not items:
+        await send_cmd.finish("⚠️ 未识别到道具信息，发送取消。")
+        return
+
+    msg = _format_message(items)
+
+    # 确定目标群：测试专用群 > MERCHANT_GROUPS 第一个 > 当前触发群
+    if plugin_config.merchant_test_group:
+        target_groups = [plugin_config.merchant_test_group]
+    elif plugin_config.merchant_groups:
+        target_groups = [plugin_config.merchant_groups[0]]
+    else:
+        target_groups = [str(event.group_id)]
+
+    results = []
+    for gid in target_groups:
+        try:
+            await bot.send_group_msg(group_id=int(gid), message=msg)
+            results.append(f"  ✅ 群 {gid} 发送成功")
+            logger.info("[远行商人] 测试立即发送 → 群 %s", gid)
+        except Exception as e:
+            results.append(f"  ❌ 群 {gid} 发送失败: {e}")
+            logger.error("[远行商人] 测试立即发送失败 群 %s: %s", gid, e)
+
+    await send_cmd.finish(
+        "📪 【立即发送完毕】\n"
+        + "\n".join(results)
     )
 
 
